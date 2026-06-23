@@ -317,9 +317,15 @@ function ingestTabs(loadedTabs){
     let meeting=null;
     for(const r of t.rows){
       const pr=clean(r['Purchase Request No.']);
-      if(/^BAC Minutes for/i.test(pr)){
-        // Namespace meeting by tab label so identical dates in different tabs don't merge unexpectedly
-        const base=pr.replace(/^BAC Minutes for\s*/i,'').replace(/[:：]$/,'').trim();
+      // Meeting separators: scan EVERY cell in the row for "BAC Minutes for…",
+      // since some tabs place that label in a different column than others.
+      let meetingCell=null;
+      for(const key in r){
+        const v=clean(r[key]);
+        if(/^BAC Minutes for/i.test(v)){meetingCell=v;break;}
+      }
+      if(meetingCell){
+        const base=meetingCell.replace(/^BAC Minutes for\s*/i,'').replace(/[:：]$/,'').trim();
         meeting=base;
         if(!MEETINGS[meeting]){MEETINGS[meeting]=[];MEETING_ORDER.push(meeting);}
         continue;
