@@ -195,7 +195,25 @@
 <footer>Self-contained generator &middot; runs entirely in your browser &middot; data stays on your machine</footer>
 
 <script>
-const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQ9kK0c8wtXxdhOgkigmQOMa-_6cJ220k2pPMLKAeRiTGcW3FCTNamxQThRFbizMr2eCwqKBRlkl6ls/pub?output=csv";
+// The published-sheet ID (the long string between /e/ and /pub). Shared by all tabs.
+const SHEET_ID = "2PACX-1vQ9kK0c8wtXxdhOgkigmQOMa-_6cJ220k2pPMLKAeRiTGcW3FCTNamxQThRFbizMr2eCwqKBRlkl6ls";
+
+// ════════════════════════════════════════════════════════════════════════
+//  ADD NEW TABS HERE  ▸  To add a tab (e.g. Q3):
+//   1. In Google Sheets: File → Share → Publish to web → pick that tab → CSV → Publish
+//   2. Copy the gid number from the link it shows (the part after "gid=")
+//   3. Add one line below, following the same pattern. Save & re-upload to GitHub.
+//  That's the whole job — no other code needs touching.
+// ════════════════════════════════════════════════════════════════════════
+const SHEET_TABS = [
+  { label: "Q1", gid: "0" },
+  { label: "Q2", gid: "2026567419" },
+  // { label: "Q3", gid: "PASTE_GID_HERE" },
+  // { label: "Q4", gid: "PASTE_GID_HERE" },
+];
+
+// Builds the clean CSV URL for a given gid (handles the pubhtml→pub+csv detail for you)
+const tabUrl = gid => `https://docs.google.com/spreadsheets/d/e/${SHEET_ID}/pub?gid=${gid}&single=true&output=csv`;
 
 let RAW=[], BYREF={}, MEETINGS={}, MEETING_ORDER=[], currentDoc='reso';
 
@@ -224,81 +242,106 @@ function pesoWords(v){
 const variance=(abc,q)=>{const A=num(abc),Q=num(q);return A?((A-Q)/A*100):0;};
 
 // ---------- load CSV ----------
-// Fetch the CSV text ourselves, then parse. Tries the direct URL first
-// (works in most browsers), then falls back through CORS proxies if the
-// browser blocks the cross-origin response.
-async function fetchCsvText(){
+// Fetch one tab's CSV text. Tries direct first (works once hosted over https),
+// then falls back through CORS proxies if the browser blocks it.
+async function fetchCsvText(url){
   const attempts=[
-    {label:'direct',url:CSV_URL},
-    {label:'proxy (allorigins)',url:'https://api.allorigins.win/raw?url='+encodeURIComponent(CSV_URL)},
-    {label:'proxy (corsproxy.io)',url:'https://corsproxy.io/?url='+encodeURIComponent(CSV_URL)}
+    {label:'direct',u:url},
+    {label:'proxy (allorigins)',u:'https://api.allorigins.win/raw?url='+encodeURIComponent(url)},
+    {label:'proxy (corsproxy.io)',u:'https://corsproxy.io/?url='+encodeURIComponent(url)}
   ];
   const errors=[];
   for(const a of attempts){
     try{
-      const res=await fetch(a.url,{redirect:'follow'});
+      const res=await fetch(a.u,{redirect:'follow'});
       if(!res.ok){errors.push(`${a.label}: HTTP ${res.status}`);continue;}
       const text=await res.text();
-      if(!text||text.length<20){errors.push(`${a.label}: empty response`);continue;}
-      // Google sometimes returns an HTML sign-in page if the sheet isn't truly public
-      if(/^\s*<(!doctype|html)/i.test(text)){errors.push(`${a.label}: got HTML, not CSV (sheet may not be published to web)`);continue;}
+      if(!text||text.length<20){errors.push(`${a.label}: empty`);continue;}
+      if(/^\s*<(!doctype|html)/i.test(text)){errors.push(`${a.label}: got HTML not CSV (tab may not be published)`);continue;}
       return {text,via:a.label};
     }catch(e){errors.push(`${a.label}: ${e.message||'blocked'}`);}
   }
-  throw new Error(errors.join('  |  '));
+  throw new Error(errors.join(' | '));
 }
 
 async function loadData(){
   const st=$('dataStatus');
-  st.className='status load show';st.textContent='Loading data from Google Sheet…';
+  st.className='status load show';st.textContent=`Loading ${SHEET_TABS.length} tab(s) from Google Sheet…`;
   try{
-    const {text,via}=await fetchCsvText();
-    const res=Papa.parse(text,{header:true,skipEmptyLines:false});
-    ingest(res.data);
-    st.className='status ok show';
-    st.textContent=`Loaded ${RAW.length} project rows across ${MEETING_ORDER.length} meetings.`;
-    $('dataMeta').textContent=`Refreshed ${new Date().toLocaleTimeString()} · via ${via}`;
+    // Fetch every tab in parallel
+    const results=await Promise.allSettled(
+      SHEET_TABS.map(t=>fetchCsvText(tabUrl(t.gid)).then(r=>({tab:t,...r})))
+    );
+    const loadedTabs=[];      // {label, rows, via}
+    const failedTabs=[];      // {label, reason}
+    results.forEach((res,i)=>{
+      const t=SHEET_TABS[i];
+      if(res.status==='fulfilled'){
+        const parsed=Papa.parse(res.value.text,{header:true,skipEmptyLines:false});
+        loadedTabs.push({label:t.label,rows:parsed.data,via:res.value.via});
+      }else{
+        failedTabs.push({label:t.label,reason:res.reason.message||'failed'});
+      }
+    });
+    if(loadedTabs.length===0)throw new Error(failedTabs.map(f=>`${f.label}: ${f.reason}`).join(' | '));
+
+    const dupes=ingestTabs(loadedTabs);
+
+    // Build status line
+    const tabSummary=loadedTabs.map(t=>t.label).join(', ');
+    let msg=`Loaded ${RAW.length} project rows from ${loadedTabs.length} tab(s): ${tabSummary}. ${MEETING_ORDER.length} meetings total.`;
+    st.className='status ok show';st.textContent=msg;
+    $('dataMeta').textContent=`Refreshed ${new Date().toLocaleTimeString()}`;
+
+    // Warn about partial failures or duplicates without blocking use
+    let warn='';
+    if(failedTabs.length)warn+=`⚠ ${failedTabs.length} tab(s) didn't load: `+failedTabs.map(f=>`${f.label} (${f.reason})`).join('; ')+'. ';
+    if(dupes.length)warn+=`⚠ Duplicate Ref. No. across tabs (latest tab kept): ${dupes.join(', ')}.`;
+    if(warn){
+      const w=document.createElement('div');w.className='mini';w.style.marginTop='6px';w.style.color='#9b6b00';w.textContent=warn;
+      st.appendChild(w);
+    }
   }catch(e){
     st.className='status err show';
-    st.innerHTML=`Could not load the sheet. Tried:<br><span style="font-size:11.5px">${e.message}</span>`
-      +`<br><br>Most likely fix: in Google Sheets, <b>File → Share → Publish to web → CSV</b>, then click Publish. The link must be a <i>/pub?output=csv</i> link (it is), and publishing must be turned on.`;
+    st.innerHTML=`Could not load any tab. Tried:<br><span style="font-size:11.5px">${e.message}</span>`
+      +`<br><br>Check that each tab in <b>SHEET_TABS</b> is published (File → Share → Publish to web → pick tab → CSV) and the gid is correct.`;
   }
 }
 
-function ingest(rows){
+// Combine multiple tabs' parsed rows into one pool, preserving meeting grouping
+// per tab. Returns a list of duplicate Ref. Nos. found across tabs.
+function ingestTabs(loadedTabs){
   RAW=[];BYREF={};MEETINGS={};MEETING_ORDER=[];
-  let meeting=null;
-  for(const r of rows){
-    const pr=clean(r['Purchase Request No.']);
-    if(/^BAC Minutes for/i.test(pr)){
-      meeting=pr.replace(/^BAC Minutes for\s*/i,'').replace(/[:：]$/,'').trim();
-      if(!MEETINGS[meeting]){MEETINGS[meeting]=[];MEETING_ORDER.push(meeting);}
-      continue;
+  const seenRef={};const dupes=[];
+  for(const t of loadedTabs){
+    let meeting=null;
+    for(const r of t.rows){
+      const pr=clean(r['Purchase Request No.']);
+      if(/^BAC Minutes for/i.test(pr)){
+        // Namespace meeting by tab label so identical dates in different tabs don't merge unexpectedly
+        const base=pr.replace(/^BAC Minutes for\s*/i,'').replace(/[:：]$/,'').trim();
+        meeting=base;
+        if(!MEETINGS[meeting]){MEETINGS[meeting]=[];MEETING_ORDER.push(meeting);}
+        continue;
+      }
+      if(!pr&&!clean(r['Ref. No.'])&&!clean(r['Amount']))continue;
+      const row={
+        control:clean(r['']),pr,prDate:clean(r['P.R. Date']),amount:clean(r['Amount']),
+        desc:clean(r['Brief Description']),funding:clean(r['Funding']),office:clean(r['Office']),
+        mode:clean(r['Mode']),project:clean(r['Project Name']),ref:clean(r['Ref. No.']),
+        duration:clean(r['Project Duration']),rfqPrepared:clean(r['RFQ Prepared Date']),
+        opening:clean(r['Opening of Quotation']),philgepsPost:clean(r['PhilGEPS Posting Date']),
+        philgepsCtrl:clean(r['PhilGEPS Control No.']),winner:clean(r['Winning Bidder']),
+        contractAmt:clean(r['Conctract Amount']||r['Contract Amount']),meeting,tab:t.label
+      };
+      RAW.push(row);
+      if(meeting)MEETINGS[meeting].push(row);
+      if(row.ref){
+        if(seenRef[row.ref]&&seenRef[row.ref]!==t.label)dupes.push(`${row.ref} (${seenRef[row.ref]}→${t.label})`);
+        BYREF[row.ref]=row;            // latest tab wins
+        seenRef[row.ref]=t.label;
+      }
     }
-    if(!pr&&!clean(r['Ref. No.'])&&!clean(r['Amount']))continue;
-    const row={
-      control:clean(r['']),
-      pr:pr,
-      prDate:clean(r['P.R. Date']),
-      amount:clean(r['Amount']),
-      desc:clean(r['Brief Description']),
-      funding:clean(r['Funding']),
-      office:clean(r['Office']),
-      mode:clean(r['Mode']),
-      project:clean(r['Project Name']),
-      ref:clean(r['Ref. No.']),
-      duration:clean(r['Project Duration']),
-      rfqPrepared:clean(r['RFQ Prepared Date']),
-      opening:clean(r['Opening of Quotation']),
-      philgepsPost:clean(r['PhilGEPS Posting Date']),
-      philgepsCtrl:clean(r['PhilGEPS Control No.']),
-      winner:clean(r['Winning Bidder']),
-      contractAmt:clean(r['Conctract Amount']||r['Contract Amount']),
-      meeting:meeting
-    };
-    RAW.push(row);
-    if(meeting)MEETINGS[meeting].push(row);
-    if(row.ref)BYREF[row.ref]=row;
   }
   // populate ref datalist
   const dl=$('refList');dl.innerHTML='';
@@ -311,6 +354,7 @@ function ingest(rows){
   MEETING_ORDER.forEach(m=>{const o=document.createElement('option');o.value=m;
     o.textContent=`${m}  (${MEETINGS[m].filter(r=>r.ref).length} projects)`;ms.appendChild(o);});
   if(MEETING_ORDER.length)renderMeetPreview();
+  return dupes;
 }
 
 // ---------- tab switching ----------
