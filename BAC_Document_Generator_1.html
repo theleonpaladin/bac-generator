@@ -203,13 +203,16 @@ const SHEET_ID = "2PACX-1vQ9kK0c8wtXxdhOgkigmQOMa-_6cJ220k2pPMLKAeRiTGcW3FCTNamx
 //   1. In Google Sheets: File → Share → Publish to web → pick that tab → CSV → Publish
 //   2. Copy the gid number from the link it shows (the part after "gid=")
 //   3. Add one line below, following the same pattern. Save & re-upload to GitHub.
-//  That's the whole job — no other code needs touching.
+//
+//  colShift: how many columns this tab's DATA is shifted RIGHT of the headers.
+//    0 = aligned (normal). 2 = data sits 2 columns to the right of where it should.
+//    If a tab loads garbled/blank fields, its colShift is probably wrong — adjust it.
 // ════════════════════════════════════════════════════════════════════════
 const SHEET_TABS = [
-  { label: "Q1", gid: "0" },
-  { label: "Q2", gid: "2026567419" },
-  // { label: "Q3", gid: "PASTE_GID_HERE" },
-  // { label: "Q4", gid: "PASTE_GID_HERE" },
+  { label: "Q1", gid: "0",          colShift: 2 },
+  { label: "Q2", gid: "2026567419", colShift: 0 },
+  // { label: "Q3", gid: "PASTE_GID_HERE", colShift: 0 },
+  // { label: "Q4", gid: "PASTE_GID_HERE", colShift: 0 },
 ];
 
 // Builds the clean CSV URL for a given gid (handles the pubhtml→pub+csv detail for you)
@@ -234,10 +237,13 @@ function numToWords(n){
 }
 function pesoWords(v){
   const n=typeof v==='number'?v:num(v);
-  const p=Math.floor(n),c=Math.round((n-p)*100);
-  let w=numToWords(p)+' Pesos';
-  if(c>0)w+=' and '+numToWords(c)+' Centavos';
-  return w;
+  const p=Math.floor(n+1e-9);                 // whole pesos (epsilon guards float error)
+  const c=Math.round((n-p)*100);              // centavos
+  if(c>0){
+    const cc=String(c).padStart(2,'0');       // e.g. 5 -> "05"
+    return `${numToWords(p)} and ${cc}/100 Pesos`;
+  }
+  return `${numToWords(p)} Pesos only`;
 }
 const variance=(abc,q)=>{const A=num(abc),Q=num(q);return A?((A-Q)/A*100):0;};
 
@@ -277,8 +283,11 @@ async function loadData(){
     results.forEach((res,i)=>{
       const t=SHEET_TABS[i];
       if(res.status==='fulfilled'){
-        const parsed=Papa.parse(res.value.text,{header:true,skipEmptyLines:false});
-        loadedTabs.push({label:t.label,rows:parsed.data,via:res.value.via});
+        // Parse WITHOUT header mode so we get positional arrays, then realign
+        // each tab's data using its colShift before mapping to named fields.
+        const parsed=Papa.parse(res.value.text,{header:false,skipEmptyLines:false});
+        const rows=alignRows(parsed.data,t.colShift||0);
+        loadedTabs.push({label:t.label,rows,via:res.value.via});
       }else{
         failedTabs.push({label:t.label,reason:res.reason.message||'failed'});
       }
@@ -308,6 +317,34 @@ async function loadData(){
   }
 }
 
+// Canonical column order (matches the header row of an aligned tab like Q2).
+// Used to map positional cells back to named fields after applying colShift.
+const CANON_HEADERS=['','Purchase Request No.','P.R. Date','Amount','Brief Description',
+  'Funding','Office','Mode','Project Name','Ref. No.','Project Duration','RFQ Prepared Date',
+  'Opening of Quotation','PhilGEPS Posting Date','PhilGEPS Control No.'];
+
+// Takes positional rows (arrays) from PapaParse(header:false) and returns
+// objects keyed by CANON_HEADERS. colShift>0 means this tab's DATA sits that
+// many columns to the RIGHT of the headers, so we read each value from
+// (canonicalIndex + colShift). Row 0 (the header row) is skipped.
+function alignRows(rawRows,colShift){
+  if(!rawRows||!rawRows.length)return [];
+  const out=[];
+  for(let i=1;i<rawRows.length;i++){           // skip header row
+    const cells=rawRows[i]||[];
+    const obj={};
+    CANON_HEADERS.forEach((name,idx)=>{
+      const srcIdx=idx===0?0:idx+colShift;      // col 0 (control no.) stays put; shift the rest
+      obj[name]=cells[srcIdx]!=null?cells[srcIdx]:'';
+    });
+    // Also expose any "BAC Minutes for…" text wherever it lands, so meeting
+    // detection works regardless of which raw column holds it.
+    obj.__rawcells=cells;
+    out.push(obj);
+  }
+  return out;
+}
+
 // Combine multiple tabs' parsed rows into one pool, preserving meeting grouping
 // per tab. Returns a list of duplicate Ref. Nos. found across tabs.
 function ingestTabs(loadedTabs){
@@ -317,11 +354,12 @@ function ingestTabs(loadedTabs){
     let meeting=null;
     for(const r of t.rows){
       const pr=clean(r['Purchase Request No.']);
-      // Meeting separators: scan EVERY cell in the row for "BAC Minutes for…",
-      // since some tabs place that label in a different column than others.
+      // Meeting separators: scan the row's RAW cells for "BAC Minutes for…",
+      // so it's found no matter which column (shifted or not) holds the label.
       let meetingCell=null;
-      for(const key in r){
-        const v=clean(r[key]);
+      const scan=Array.isArray(r.__rawcells)?r.__rawcells:Object.values(r);
+      for(const cellVal of scan){
+        const v=clean(cellVal);
         if(/^BAC Minutes for/i.test(v)){meetingCell=v;break;}
       }
       if(meetingCell){
@@ -427,6 +465,12 @@ function recalcAbstract(){
   const row=BYREF[clean($('refInput').value)];
   if(!row)return;
   const abc=num(row.amount);
+  // basis for each supplier = the LOWER of their as-read and as-calculated
+  // figures (R.A. 12009: most economical to government, regardless of column).
+  const lowestOf=(read,calc)=>{
+    const vals=[];if(read!=='')vals.push(num(read));if(calc!=='')vals.push(num(calc));
+    return vals.length?Math.min(...vals):null;
+  };
   let best=null,bestName='';
   [...$('absBody').children].forEach(tr=>{
     const read=tr.querySelector('.read').value;
@@ -435,12 +479,11 @@ function recalcAbstract(){
     tr.querySelector('.read-var').textContent=read!==''?variance(abc,read).toFixed(2)+'%':'—';
     tr.querySelector('.calc-var').textContent=calc!==''?variance(abc,calc).toFixed(2)+'%':'—';
     tr.classList.remove('win');
-    const basis=calc!==''?num(calc):(read!==''?num(read):null);
+    const basis=lowestOf(read,calc);
     if(basis!==null&&clean(name)){if(best===null||basis<best){best=basis;bestName=name;}}
   });
   [...$('absBody').children].forEach(tr=>{
-    const calc=tr.querySelector('.calc').value,read=tr.querySelector('.read').value;
-    const basis=calc!==''?num(calc):(read!==''?num(read):null);
+    const basis=lowestOf(tr.querySelector('.read').value,tr.querySelector('.calc').value);
     if(basis!==null&&clean(tr.querySelector('.name').value)===bestName&&best!==null&&basis===best)tr.classList.add('win');
   });
   $('winLine').innerHTML=best!==null
@@ -458,7 +501,9 @@ function getAbstract(){
     o.readVar=o.read!==null?variance(abc,o.read):null;
     o.calcVar=o.calc!==null?variance(abc,o.calc):null;
     suppliers.push(o);
-    const basis=o.calc!==null?o.calc:o.read;
+    // Award basis = lower of the supplier's two figures, regardless of column.
+    const vals=[];if(o.read!==null)vals.push(o.read);if(o.calc!==null)vals.push(o.calc);
+    const basis=vals.length?Math.min(...vals):null;
     if(basis!==null&&name){if(best===null||basis<best){best=basis;winner=o;}}
   });
   return {suppliers,winner,best,abc};
