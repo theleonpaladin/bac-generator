@@ -548,7 +548,22 @@ function renderMeetPreview(){
 }
 
 // =================== DOCX GENERATION ===================
-const D=()=>window.docx;
+// Resolve the docx library robustly. Different CDN/UMD builds attach it under
+// different globals (window.docx, plain docx, or window.Docx). Find whichever
+// exists and has the classes we need; throw a clear message if none do.
+let _docxLib=null;
+function D(){
+  if(_docxLib&&_docxLib.TableRow)return _docxLib;
+  const candidates=[
+    (typeof window!=='undefined'&&window.docx),
+    (typeof window!=='undefined'&&window.Docx),
+    (typeof docx!=='undefined'?docx:null)
+  ];
+  for(const c of candidates){
+    if(c&&c.TableRow&&c.Document&&c.Paragraph){_docxLib=c;return _docxLib;}
+  }
+  throw new Error('The Word-document library didn\u2019t load. Check your internet connection and refresh the page; if it persists, the docx CDN script may be blocked by your network.');
+}
 const PAGE={width:12240,height:15840};
 const MARGIN={top:1080,right:1080,bottom:1080,left:1080};
 const CW=PAGE.width-MARGIN.left-MARGIN.right; // 10080
@@ -821,6 +836,23 @@ $('refreshBtn').onclick=loadData;
 // ---------- init ----------
 buildManualFields();
 loadData();
+
+// Check the docx library actually loaded; warn early if the CDN was blocked.
+(function checkLibs(tries){
+  const ok=(typeof window!=='undefined'&&window.docx&&window.docx.TableRow);
+  const papaOk=(typeof Papa!=='undefined');
+  if(ok&&papaOk)return;
+  if(tries>20){ // ~5s of retries
+    const st=$('dataStatus');
+    if(!ok){
+      st.className='status err show';
+      st.innerHTML='⚠ The Word-document engine didn\u2019t load from the internet (CDN may be blocked by your network). '
+        +'Data viewing works, but generating .docx files won\u2019t until the page loads <code>docx.umd.min.js</code> successfully. Try refreshing, or check with IT about access to <b>cdnjs.cloudflare.com</b>.';
+    }
+    return;
+  }
+  setTimeout(()=>checkLibs(tries+1),250);
+})(0);
 </script>
 </body>
 </html>
