@@ -26,21 +26,24 @@ function loadScript(urls){
   });
 }
 async function loadAll(){
-  // PapaParse mirrors
+  // PapaParse — local copy first, then CDN mirrors
   window.__libStatus.papa=await loadScript([
+    "./lib/papaparse.min.js",
     "https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js",
     "https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js",
     "https://unpkg.com/papaparse@5.4.1/papaparse.min.js"
   ]);
-  // docx mirrors
+  // docx — local copy first, then CDN mirrors
   window.__libStatus.docx=await loadScript([
+    "./lib/docx.umd.min.js",
     "https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js",
     "https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js",
     "https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js",
     "https://unpkg.com/docx@8.5.0/build/index.umd.js"
   ]);
-  // FileSaver mirrors
+  // FileSaver — local copy first, then CDN mirrors
   window.__libStatus.filesaver=await loadScript([
+    "./lib/FileSaver.min.js",
     "https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js",
     "https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js",
     "https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"
@@ -259,7 +262,7 @@ const SHEET_TABS = [
 // Builds the clean CSV URL for a given gid (handles the pubhtml→pub+csv detail for you)
 const tabUrl = gid => `https://docs.google.com/spreadsheets/d/e/${SHEET_ID}/pub?gid=${gid}&single=true&output=csv`;
 
-let RAW=[], BYREF={}, MEETINGS={}, MEETING_ORDER=[], currentDoc='reso';
+let RAW=[], BYREF={}, BYREF_ALL={}, MEETINGS={}, MEETING_ORDER=[], currentDoc='reso';
 
 // ---------- helpers ----------
 const $=id=>document.getElementById(id);
@@ -287,6 +290,36 @@ function pesoWords(v){
   return `${numToWords(p)} Pesos only`;
 }
 const variance=(abc,q)=>{const A=num(abc),Q=num(q);return A?((A-Q)/A*100):0;};
+
+// Format a date string as "March 29, 2026". Accepts common inputs like
+// "03/29/2026", "2026-03-29", "March 29, 2026", "29-Mar-2026". If it can't
+// confidently parse, returns the original text unchanged (never invents a date).
+const MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
+function fmtLongDate(s){
+  const str=clean(s);
+  if(!str)return '';
+  // Already in "Month D, YYYY"? leave as-is (normalize spacing/comma)
+  const m1=str.match(/^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+  if(m1){
+    const mi=MONTHS.findIndex(mo=>mo.toLowerCase().startsWith(m1[1].slice(0,3).toLowerCase()));
+    if(mi>=0)return `${MONTHS[mi]} ${parseInt(m1[2],10)}, ${m1[3]}`;
+  }
+  // Numeric m/d/y or m-d-y
+  let mo,da,yr;
+  const mdy=str.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  const ymd=str.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if(ymd){yr=+ymd[1];mo=+ymd[2];da=+ymd[3];}
+  else if(mdy){mo=+mdy[1];da=+mdy[2];yr=+mdy[3];if(yr<100)yr+=2000;}
+  if(mo&&da&&yr&&mo>=1&&mo<=12&&da>=1&&da<=31){
+    return `${MONTHS[mo-1]} ${da}, ${yr}`;
+  }
+  // Fallback: let Date try, but only accept if valid
+  const d=new Date(str);
+  if(!isNaN(d.getTime())&&/\d{4}/.test(str)){
+    return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  }
+  return str; // unparseable — return as written
+}
 
 // ---------- load CSV ----------
 // Fetch one tab's CSV text. Tries direct first (works once hosted over https),
@@ -389,7 +422,7 @@ function alignRows(rawRows,colShift){
 // Combine multiple tabs' parsed rows into one pool, preserving meeting grouping
 // per tab. Returns a list of duplicate Ref. Nos. found across tabs.
 function ingestTabs(loadedTabs){
-  RAW=[];BYREF={};MEETINGS={};MEETING_ORDER=[];
+  RAW=[];BYREF={};BYREF_ALL={};MEETINGS={};MEETING_ORDER=[];
   const seenRef={};const dupes=[];
   for(const t of loadedTabs){
     let meeting=null;
@@ -422,8 +455,13 @@ function ingestTabs(loadedTabs){
       RAW.push(row);
       if(meeting)MEETINGS[meeting].push(row);
       if(row.ref){
+        // Collect EVERY row for this ref (a ref may span multiple Purchase Requests).
+        if(!BYREF_ALL[row.ref])BYREF_ALL[row.ref]=[];
+        BYREF_ALL[row.ref].push(row);
+        // Cross-tab collision is still worth flagging; same-tab repeats are
+        // legitimate multi-PR groupings, not errors.
         if(seenRef[row.ref]&&seenRef[row.ref]!==t.label)dupes.push(`${row.ref} (${seenRef[row.ref]}→${t.label})`);
-        BYREF[row.ref]=row;            // latest tab wins
+        BYREF[row.ref]=BYREF_ALL[row.ref][0];   // primary = first row seen for shared fields
         seenRef[row.ref]=t.label;
       }
     }
@@ -464,17 +502,25 @@ function onRefChange(){
   const row=BYREF[ref];
   const box=$('autoFill');
   if(!row){box.classList.add('hidden');$('refHint').textContent=ref?'No match yet…':'';return;}
+  const allRows=(BYREF_ALL[ref]&&BYREF_ALL[ref].length)?BYREF_ALL[ref]:[row];
   $('refHint').textContent='✓ matched';
   box.classList.remove('hidden');
+  const prCell=allRows.length>1
+    ? `${allRows.length} Purchase Requests: ${allRows.map(r=>r.pr).join('; ')}`
+    : row.pr;
+  const totalABC=allRows.reduce((s,r)=>s+num(r.amount),0);
+  const abcCell=allRows.length>1
+    ? `Php ${fmtPeso(totalABC)} (combined across ${allRows.length} PRs)`
+    : 'Php '+fmtPeso(num(row.amount));
   const rows=[
     ['Project Name',row.project],
-    ['Purchase Request No.',row.pr],
-    ['P.R. / Prepare Date',row.prDate],
-    ['ABC (Amount)','Php '+fmtPeso(num(row.amount))],
+    ['Purchase Request No.',prCell],
+    ['P.R. / Prepare Date',fmtLongDate(row.prDate)],
+    ['ABC (Amount)',abcCell],
     ['Mode of Procurement',row.mode],
     ['Funding / Source',row.funding],
     ['Office',row.office],
-    ['Opening of Quotation',row.opening||'—'],
+    ['Opening of Quotation',fmtLongDate(row.opening)||'—'],
     ['PhilGEPS Control No.',row.philgepsCtrl||'—']
   ];
   box.innerHTML=rows.map(([k,v])=>`<div class="row"><span class="k">${k}</span><span>${v||'—'}</span></div>`).join('');
@@ -554,11 +600,9 @@ function getAbstract(){
 const MANUAL_DEFS={
   reso:[
     {id:'rfqSentN',label:'No. of suppliers RFQ sent to',ph:'e.g. 3'},
-    {id:'rfqSentDate',label:'Date RFQ sent',ph:'e.g. May 20, 2026'},
     {id:'respN',label:'No. of suppliers who responded',ph:'e.g. 3'},
     {id:'resoNo',label:'BAC Resolution No.',ph:'e.g. 2026-0418'},
-    {id:'resoDate',label:'Done this (date)',ph:'e.g. June 18, 2026'},
-    {id:'resoLoc',label:'Location',ph:'Mamburao, Occidental Mindoro',val:'Mamburao, Occidental Mindoro'}
+    {id:'endUser',label:'End User (name)',ph:'e.g. ROMUALDO M. SALAZAR JR. MD, MHA'}
   ],
   opening:[
     {id:'openMover',label:'Mover (motions)',type:'select',opts:['Mr. Tria','Mr. Cortuna','Engr. Dantis','Engr. Fineza']},
@@ -668,22 +712,26 @@ async function saveDoc(doc,filename){
 async function genReso(){
   const k=D();const ref=clean($('refInput').value);const row=BYREF[ref];
   if(!row)throw new Error('No matching Ref. No.');
+  const allRows=(BYREF_ALL[ref]&&BYREF_ALL[ref].length)?BYREF_ALL[ref]:[row];
   const {suppliers,winner,best}=getAbstract();
   if(!winner)throw new Error('Enter at least one supplier with a name and quotation.');
   const g=id=>clean(($(id)||{}).value);
+  // "Lowest" if more than one supplier, "Single" if only one
+  const lowestSingle=suppliers.filter(s=>clean(s.name)).length>1?'Lowest':'Single';
   const detailWs=[2520,2520,2520,2520];
   const detailHead=new k.TableRow({tableHeader:true,children:[
     cell('PURCHASE REQUEST NO.',{w:detailWs[0],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
-    cell('PREPARE DATE',{w:detailWs[1],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
+    cell('P.R. PREPARE DATE',{w:detailWs[1],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
     cell('ABC',{w:detailWs[2],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
     cell('FUNDING',{w:detailWs[3],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
   ]});
-  const detailRow=new k.TableRow({children:[
-    cell(row.pr,{w:detailWs[0],align:k.AlignmentType.CENTER}),
-    cell(row.prDate,{w:detailWs[1],align:k.AlignmentType.CENTER}),
-    cell('Php '+fmtPeso(num(row.amount)),{w:detailWs[2],align:k.AlignmentType.CENTER}),
-    cell(row.funding,{w:detailWs[3],align:k.AlignmentType.CENTER}),
-  ]});
+  // One detail row per Purchase Request sharing this Ref. No.
+  const detailRows=allRows.map(pr=>new k.TableRow({children:[
+    cell(pr.pr,{w:detailWs[0],align:k.AlignmentType.CENTER}),
+    cell(fmtLongDate(pr.prDate),{w:detailWs[1],align:k.AlignmentType.CENTER}),
+    cell('Php '+fmtPeso(num(pr.amount)),{w:detailWs[2],align:k.AlignmentType.CENTER}),
+    cell(pr.funding,{w:detailWs[3],align:k.AlignmentType.CENTER}),
+  ]}));
 
   const children=[
     new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('Republic of the Philippines',{size:20})]}),
@@ -696,23 +744,23 @@ async function genReso(){
     new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:240},children:[run('RECOMMENDING THE AWARD OF CONTRACT FOR THE '+row.project.toUpperCase(),{bold:true})]}),
     new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
       run('WHEREAS, ',{bold:true}),
-      run('the Bids and Awards Committee (BAC) Secretariat received request from the End-User unit to conduct '+row.mode+' for the items indicated in the approved Purchase Request with the following details:')
+      run('the Bids and Awards Committee (BAC) Secretariat received request from the End-User unit to procure under '+row.mode+' the items indicated in the approved Purchase Request with the following details:')
     ]}),
-    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:detailWs,rows:[detailHead,detailRow]}),
+    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:detailWs,rows:[detailHead,...detailRows]}),
     new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
       run('WHEREAS, ',{bold:true}),
-      run('the BAC, through its Secretariat, prepared Request for Quotation (RFQ) forms and sent it to '+(g('rfqSentN')||'[__]')+' suppliers or contractors of known qualifications on '+(g('rfqSentDate')||'[Date]')+';')
+      run('the BAC, through its Secretariat, prepared Request for Quotation (RFQ) forms and sent it to '+(g('rfqSentN')||'[__]')+' suppliers or contractors of known qualifications on '+(fmtLongDate(row.rfqPrepared)||g('rfqSentDate')||'[RFQ Prepared Date]')+';')
     ]}),
     new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[
       run('WHEREAS, ',{bold:true}),
-      run('on '+(row.opening||'[Date]')+', the scheduled date of deadline for submission of quotation, the Secretariat received responses from '+(g('respN')||'[__]')+' suppliers which resulted in the following Abstract of Quotation:')
+      run('on, '+(fmtLongDate(row.opening)||'[Opening of Quotation]')+', the scheduled date of deadline for submission of quotation, the Secretariat received responses from '+(g('respN')||'[__]')+' suppliers which resulted in the following Abstract of Quotation:')
     ]}),
     abstractTable(num(row.amount),suppliers),
     new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
       run('WHEREAS, ',{bold:true}),
       run('after validation and verification of all documentary requirements, and technical and financial offers of the suppliers, the Bids and Awards Committee considered the offer of '),
       run(winner.name,{bold:true}),
-      run(' as the Lowest Calculated and Responsive Quotation for this Project;')
+      run(' as the '+lowestSingle+' Calculated and Responsive Quotation for this Project;')
     ]}),
     new k.Paragraph({spacing:{after:200},alignment:k.AlignmentType.JUSTIFIED,children:[
       run('NOW, THEREFORE, WE, ',{bold:true}),
@@ -726,7 +774,7 @@ async function genReso(){
       run('(Php '+fmtPeso(best)+').',{bold:true})
     ]}),
     new k.Paragraph({spacing:{after:160},children:[run('UNANIMOUSLY RECOMMENDED.',{bold:true})]}),
-    new k.Paragraph({spacing:{after:240},children:[run('Done this '+(g('resoDate')||'[Date]')+' at the '+(g('resoLoc')||'Mamburao, Occidental Mindoro')+'.')]}),
+    new k.Paragraph({spacing:{after:240},alignment:k.AlignmentType.JUSTIFIED,children:[run('Done on '+(fmtLongDate(row.opening)||'[Opening of Quotation]')+' at the Bids and Awards Committee Office, 2nd Floor, GSO Warehouse Facility, Capitol Compound, Mamburao, Occidental Mindoro')]}),
     new k.Paragraph({spacing:{after:200},children:[run('RECOMMENDING APPROVAL:',{bold:true})]}),
   ];
   // signatories
@@ -737,7 +785,7 @@ async function genReso(){
     return new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:w,rows:[new k.TableRow({children:[r(a[0],a[1]),r(b[0],b[1]),r(c[0],c[1])]})]});
   };
   children.push(sigTriplet(['MARIO D. MULINGBAYAN, JR.','Chairman'],['MANUEL T. TRIA JR.','Vice Chairman'],['ANTHONY A. DANTIS','Member']));
-  children.push(sigTriplet(['IRENEO M. CORTUNA','Member'],['ROMMEL D. FINEZA','Member'],['ROMUALDO M. SALAZAR JR. MD, MHA','End User']));
+  children.push(sigTriplet(['IRENEO M. CORTUNA','Member'],['ROMMEL D. FINEZA','Member'],[(g('endUser')||'ROMUALDO M. SALAZAR JR. MD, MHA'),'End User']));
   children.push(new k.Paragraph({spacing:{before:240,after:0},children:[run('Attested by:')]}));
   children.push(...sig('JANETH B. MULINGBAYAN','BAC Head Secretariat'));
   children.push(new k.Paragraph({spacing:{before:280,after:200},children:[run('APPROVED / DISAPPROVED:',{bold:true})]}));
@@ -753,13 +801,14 @@ async function genReso(){
 async function genOpening(){
   const k=D();const ref=clean($('refInput').value);const row=BYREF[ref];
   if(!row)throw new Error('No matching Ref. No.');
+  const allRowsOpen=(BYREF_ALL[ref]&&BYREF_ALL[ref].length)?BYREF_ALL[ref]:[row];
   const {suppliers,winner,best}=getAbstract();
   if(!winner)throw new Error('Enter at least one supplier with a name and quotation.');
   const g=id=>clean(($(id)||{}).value);
   const mover=g('openMover')||'Mr. Tria';
   const adjourn=g('openAdjourn')||'10:00 AM';
   const lowestType=g('lowestType')||'Lowest';
-  const opening=row.opening||'[Opening of Quotation]';
+  const opening=fmtLongDate(row.opening)||'[Opening of Quotation]';
 
   const prWs=[2016,1764,3276,1764,1260];
   const prHead=new k.TableRow({tableHeader:true,children:[
@@ -769,10 +818,10 @@ async function genOpening(){
     cell('Approved Budget of Contract',{w:prWs[3],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
     cell('Ref. No.',{w:prWs[4],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
   ]});
-  const prRow=new k.TableRow({children:[
-    cell(row.pr,{w:prWs[0]}),cell(row.mode,{w:prWs[1]}),cell(row.project,{w:prWs[2]}),
-    cell('Php '+fmtPeso(num(row.amount)),{w:prWs[3],align:k.AlignmentType.RIGHT}),cell(row.ref,{w:prWs[4],align:k.AlignmentType.CENTER}),
-  ]});
+  const prRows=allRowsOpen.map(pr=>new k.TableRow({children:[
+    cell(pr.pr,{w:prWs[0]}),cell(pr.mode,{w:prWs[1]}),cell(pr.project,{w:prWs[2]}),
+    cell('Php '+fmtPeso(num(pr.amount)),{w:prWs[3],align:k.AlignmentType.RIGHT}),cell(pr.ref,{w:prWs[4],align:k.AlignmentType.CENTER}),
+  ]}));
 
   const children=[
     ...headerBlock(['EXCERPT OF MINUTES OF OPENING OF QUOTATIONS ('+opening+')']),
@@ -780,7 +829,7 @@ async function genOpening(){
     new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('The meeting was called to order on '),run(opening,{bold:true}),run(' at 9:00 AM at the Bids and Awards Committee Office, 2nd Floor, GSO Warehouse Facility, Capitol Compound, Mamburao, Occidental Mindoro, and was presided over by Chairman Mario D. Mulingbayan, Jr.')]}),
     new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('He requested the Secretariat to call the roll to determine quorum. After determining the presence of quorum, he requested the Secretariat to present the received quotations from the different Suppliers whom the assigned canvassers have sent copies of the Request for Quotation.')]}),
     new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[run('The Secretariat presented to the body the received quotations for the below-indicated procurement project:')]}),
-    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:prWs,rows:[prHead,prRow]}),
+    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:prWs,rows:[prHead,...prRows]}),
     new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('The Chairman asked a member from the Technical Working Group (TWG) to read the quotation for the above-indicated procurement project.')]}),
     new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[run('The TWG read to the body the submitted quotation and their corrected arithmetical computation which are as follows:')]}),
     new k.Paragraph({spacing:{after:0},children:[run('Ref. No. '+row.ref,{bold:true})]}),
