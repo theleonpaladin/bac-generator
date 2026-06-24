@@ -291,6 +291,15 @@ function pesoWords(v){
 }
 const variance=(abc,q)=>{const A=num(abc),Q=num(q);return A?((A-Q)/A*100):0;};
 
+// Summed ABC for a reference: total of every PR sharing that ref. For a
+// single-PR ref this equals that PR's amount, so single-PR refs are unchanged.
+// This summed value is the variance basis in BOTH the Resolution and Opening
+// excerpt, so their % variances always match.
+function sumABC(ref){
+  const rows=(BYREF_ALL[ref]&&BYREF_ALL[ref].length)?BYREF_ALL[ref]:(BYREF[ref]?[BYREF[ref]]:[]);
+  return rows.reduce((s,r)=>s+num(r.amount),0);
+}
+
 // Format a date string as "March 29, 2026". Accepts common inputs like
 // "03/29/2026", "2026-03-29", "March 29, 2026", "29-Mar-2026". If it can't
 // confidently parse, returns the original text unchanged (never invents a date).
@@ -549,9 +558,10 @@ function seedAbstract(row){
 }
 $('addSupplier').onclick=()=>{$('absBody').appendChild(supplierRow());};
 function recalcAbstract(){
-  const row=BYREF[clean($('refInput').value)];
+  const ref=clean($('refInput').value);
+  const row=BYREF[ref];
   if(!row)return;
-  const abc=num(row.amount);
+  const abc=sumABC(ref);   // summed across all PRs for this ref (variance basis)
   // basis for each supplier = the LOWER of their as-read and as-calculated
   // figures (R.A. 12009: most economical to government, regardless of column).
   const lowestOf=(read,calc)=>{
@@ -578,7 +588,8 @@ function recalcAbstract(){
     :'Enter at least one supplier quotation to determine the winner.';
 }
 function getAbstract(){
-  const row=BYREF[clean($('refInput').value)];const abc=num(row.amount);
+  const ref=clean($('refInput').value);
+  const row=BYREF[ref];const abc=sumABC(ref);   // summed ABC = variance basis
   const suppliers=[];let best=null,winner=null;
   [...$('absBody').children].forEach(tr=>{
     const name=clean(tr.querySelector('.name').value);
@@ -725,13 +736,34 @@ async function genReso(){
     cell('ABC',{w:detailWs[2],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
     cell('FUNDING',{w:detailWs[3],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
   ]});
-  // One detail row per Purchase Request sharing this Ref. No.
-  const detailRows=allRows.map(pr=>new k.TableRow({children:[
-    cell(pr.pr,{w:detailWs[0],align:k.AlignmentType.CENTER}),
-    cell(fmtLongDate(pr.prDate),{w:detailWs[1],align:k.AlignmentType.CENTER}),
-    cell('Php '+fmtPeso(num(pr.amount)),{w:detailWs[2],align:k.AlignmentType.CENTER}),
-    cell(pr.funding,{w:detailWs[3],align:k.AlignmentType.CENTER}),
-  ]}));
+  // Resolution detail table: each PR keeps its own PR No., P.R. Date, and
+  // Funding on its own row, but the ABC is SUMMED across all PRs and shown
+  // once (vertically merged cell spanning all rows). Single-PR refs look normal.
+  const summedABC=sumABC(ref);
+  const detailRows=allRows.map((pr,idx)=>{
+    const cells=[
+      cell(pr.pr,{w:detailWs[0],align:k.AlignmentType.CENTER}),
+      cell(fmtLongDate(pr.prDate),{w:detailWs[1],align:k.AlignmentType.CENTER}),
+    ];
+    // ABC cell: on the first row carry the summed total and start the vertical
+    // merge; on following rows continue the merge (so it reads as one cell).
+    if(idx===0){
+      cells.push(new k.TableCell({
+        width:{size:detailWs[2],type:k.WidthType.DXA},borders:cBorder(),
+        verticalMerge:allRows.length>1?k.VerticalMergeType.RESTART:undefined,
+        margins:{top:60,bottom:60,left:90,right:90},verticalAlign:k.VerticalAlign.CENTER,
+        children:[new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('Php '+fmtPeso(summedABC),{size:20})]})]
+      }));
+    }else{
+      cells.push(new k.TableCell({
+        width:{size:detailWs[2],type:k.WidthType.DXA},borders:cBorder(),
+        verticalMerge:k.VerticalMergeType.CONTINUE,
+        children:[new k.Paragraph({spacing:{after:0},children:[run('',{size:20})]})]
+      }));
+    }
+    cells.push(cell(pr.funding,{w:detailWs[3],align:k.AlignmentType.CENTER}));
+    return new k.TableRow({children:cells});
+  });
 
   const children=[
     new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('Republic of the Philippines',{size:20})]}),
@@ -755,7 +787,7 @@ async function genReso(){
       run('WHEREAS, ',{bold:true}),
       run('on, '+(fmtLongDate(row.opening)||'[Opening of Quotation]')+', the scheduled date of deadline for submission of quotation, the Secretariat received responses from '+(g('respN')||'[__]')+' suppliers which resulted in the following Abstract of Quotation:')
     ]}),
-    abstractTable(num(row.amount),suppliers),
+    abstractTable(sumABC(ref),suppliers),
     new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
       run('WHEREAS, ',{bold:true}),
       run('after validation and verification of all documentary requirements, and technical and financial offers of the suppliers, the Bids and Awards Committee considered the offer of '),
@@ -834,8 +866,8 @@ async function genOpening(){
     new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[run('The TWG read to the body the submitted quotation and their corrected arithmetical computation which are as follows:')]}),
     new k.Paragraph({spacing:{after:0},children:[run('Ref. No. '+row.ref,{bold:true})]}),
     new k.Paragraph({spacing:{after:0},children:[run(row.project,{bold:true})]}),
-    new k.Paragraph({spacing:{after:120},children:[run('ABC: Php '+fmtPeso(num(row.amount)),{bold:true})]}),
-    abstractTable(num(row.amount),suppliers),
+    new k.Paragraph({spacing:{after:120},children:[run('ABC: Php '+fmtPeso(sumABC(ref)),{bold:true})]}),
+    abstractTable(sumABC(ref),suppliers),
     new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('After validation and verification of all documentary requirements, and technical and financial offers of the suppliers, the TWG recommended to the BAC that '),run(winner.name,{bold:true}),run(' be declared as the '+lowestType+' Calculated and Responsive Quotation for the Project.')]}),
     new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('On the motion of '),run(mover,{bold:true}),run(', seconded unanimously by the body, the BAC '),run('RESOLVED',{bold:true}),run(' through Resolution to recommend to the Provincial Governor, as Head of Procuring Entity, the award of contract to '),run(winner.name,{bold:true}),run(' for the Project '),run(row.project,{bold:true}),run(' in the amount of '),run(pesoWords(best),{bold:true}),run(' (Php '+fmtPeso(best)+').',{bold:true})]}),
     new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('The Chairman asks if there be any further motions/clarifications regarding the quotations opened during the meeting. He hears none.')]}),
