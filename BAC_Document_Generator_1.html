@@ -5,9 +5,50 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BAC Document Generator — Occidental Mindoro</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23146b3a'/%3E%3Crect x='6' y='6' width='52' height='52' rx='6' fill='none' stroke='%23d4af37' stroke-width='2.5'/%3E%3Cg transform='rotate(-18 32 32)'%3E%3Crect x='10' y='26' width='44' height='13' rx='2' fill='none' stroke='%23c0392b' stroke-width='2.5'/%3E%3Ctext x='32' y='35.5' font-family='Arial' font-size='8' font-weight='bold' fill='%23c0392b' text-anchor='middle'%3EAPPROVED%3C/text%3E%3C/g%3E%3C/svg%3E">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script>
+// ── Resilient library loader ────────────────────────────────────────────
+// Some networks (e.g. strict office firewalls) block specific CDNs. We try
+// several mirrors for each library in order, using the first that loads.
+// This runs synchronously-ish before the app script via loadAll() below.
+window.__libStatus={papa:false,docx:false,filesaver:false};
+function loadScript(urls){
+  return new Promise((resolve)=>{
+    let i=0;
+    const tryNext=()=>{
+      if(i>=urls.length){resolve(false);return;}
+      const s=document.createElement('script');
+      s.src=urls[i++];
+      s.onload=()=>resolve(true);
+      s.onerror=()=>{s.remove();tryNext();};
+      document.head.appendChild(s);
+    };
+    tryNext();
+  });
+}
+async function loadAll(){
+  // PapaParse mirrors
+  window.__libStatus.papa=await loadScript([
+    "https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js",
+    "https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js",
+    "https://unpkg.com/papaparse@5.4.1/papaparse.min.js"
+  ]);
+  // docx mirrors
+  window.__libStatus.docx=await loadScript([
+    "https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.umd.min.js",
+    "https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js",
+    "https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js",
+    "https://unpkg.com/docx@8.5.0/build/index.umd.js"
+  ]);
+  // FileSaver mirrors
+  window.__libStatus.filesaver=await loadScript([
+    "https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js",
+    "https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js",
+    "https://unpkg.com/file-saver@2.0.5/dist/FileSaver.min.js"
+  ]);
+  document.dispatchEvent(new Event('libs-ready'));
+}
+loadAll();
+</script>
 <style>
   :root{
     --green:#146b3a; --green-d:#0e4f2b; --gold:#d4af37; --red:#c0392b;
@@ -835,24 +876,40 @@ $('refreshBtn').onclick=loadData;
 
 // ---------- init ----------
 buildManualFields();
-loadData();
 
-// Check the docx library actually loaded; warn early if the CDN was blocked.
-(function checkLibs(tries){
-  const ok=(typeof window!=='undefined'&&window.docx&&window.docx.TableRow);
-  const papaOk=(typeof Papa!=='undefined');
-  if(ok&&papaOk)return;
-  if(tries>20){ // ~5s of retries
+function startApp(){
+  // PapaParse needed for data; load it once available.
+  if(window.__libStatus&&window.__libStatus.papa&&typeof Papa!=='undefined'){
+    loadData();
+  }else{
     const st=$('dataStatus');
-    if(!ok){
-      st.className='status err show';
-      st.innerHTML='⚠ The Word-document engine didn\u2019t load from the internet (CDN may be blocked by your network). '
-        +'Data viewing works, but generating .docx files won\u2019t until the page loads <code>docx.umd.min.js</code> successfully. Try refreshing, or check with IT about access to <b>cdnjs.cloudflare.com</b>.';
-    }
-    return;
+    st.className='status err show';
+    st.innerHTML='⚠ The data engine (PapaParse) couldn\u2019t load from any CDN. '
+      +'Your network may block cdnjs, jsDelivr, and unpkg. Check with IT about access to one of: '
+      +'<b>cdn.jsdelivr.net</b> or <b>unpkg.com</b>.';
   }
-  setTimeout(()=>checkLibs(tries+1),250);
-})(0);
+  // Warn specifically if the Word engine is missing (data may still work).
+  const docxOk=(typeof window!=='undefined'&&window.docx&&window.docx.TableRow);
+  if(!docxOk){
+    const st=$('dataStatus');
+    const note=document.createElement('div');
+    note.className='mini';note.style.marginTop='6px';note.style.color='#9b6b00';
+    note.innerHTML='⚠ Note: the Word-document engine didn\u2019t load, so .docx generation won\u2019t work yet. '
+      +'Data viewing is unaffected. This usually means all three CDNs are blocked — ask IT to allow <b>cdn.jsdelivr.net</b>.';
+    st.appendChild(note);
+  }
+}
+
+// Wait for the library loader to finish (or fire immediately if already done).
+if(window.__libStatus&&(window.__libStatus.papa||window.__libStatus.docx)){
+  startApp();
+}else{
+  document.addEventListener('libs-ready',startApp,{once:true});
+  // Safety: if the event never fires (e.g. all blocked), start anyway after 8s.
+  setTimeout(()=>{if(!window.__started){window.__started=true;startApp();}},8000);
+}
+document.addEventListener('libs-ready',()=>{window.__started=true;},{once:true});
+
 </script>
 </body>
 </html>
