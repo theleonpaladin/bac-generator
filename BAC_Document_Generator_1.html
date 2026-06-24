@@ -435,6 +435,7 @@ function ingestTabs(loadedTabs){
   const seenRef={};const dupes=[];
   for(const t of loadedTabs){
     let meeting=null;
+    let lastRef='';   // carries a merged Ref. No. down to its continuation rows
     for(const r of t.rows){
       const pr=clean(r['Purchase Request No.']);
       // Meeting separators: scan the row's RAW cells for "BAC Minutes for…",
@@ -448,14 +449,24 @@ function ingestTabs(loadedTabs){
       if(meetingCell){
         const base=meetingCell.replace(/^BAC Minutes for\s*/i,'').replace(/[:：]$/,'').trim();
         meeting=base;
+        lastRef='';   // a new meeting block starts fresh; don't carry a ref across it
         if(!MEETINGS[meeting]){MEETINGS[meeting]=[];MEETING_ORDER.push(meeting);}
         continue;
       }
       if(!pr&&!clean(r['Ref. No.'])&&!clean(r['Amount']))continue;
+      // Merged Ref. No. cells export as blank on continuation rows. If this row
+      // has no ref of its own but carries real PR data, it belongs to the most
+      // recent ref above it (the merged cell visually spans it).
+      let rowRef=clean(r['Ref. No.']);
+      if(rowRef){
+        lastRef=rowRef;
+      }else if((pr||clean(r['Amount']))&&lastRef){
+        rowRef=lastRef;     // inherit the merged ref from above
+      }
       const row={
         control:clean(r['']),pr,prDate:clean(r['P.R. Date']),amount:clean(r['Amount']),
         desc:clean(r['Brief Description']),funding:clean(r['Funding']),office:clean(r['Office']),
-        mode:clean(r['Mode']),project:clean(r['Project Name']),ref:clean(r['Ref. No.']),
+        mode:clean(r['Mode']),project:clean(r['Project Name']),ref:rowRef,
         duration:clean(r['Project Duration']),rfqPrepared:clean(r['RFQ Prepared Date']),
         opening:clean(r['Opening of Quotation']),philgepsPost:clean(r['PhilGEPS Posting Date']),
         philgepsCtrl:clean(r['PhilGEPS Control No.']),winner:clean(r['Winning Bidder']),
