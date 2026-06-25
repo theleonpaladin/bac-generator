@@ -573,12 +573,10 @@ function recalcAbstract(){
   const row=BYREF[ref];
   if(!row)return;
   const abc=sumABC(ref);   // summed across all PRs for this ref (variance basis)
-  // basis for each supplier = the LOWER of their as-read and as-calculated
-  // figures (R.A. 12009: most economical to government, regardless of column).
-  const lowestOf=(read,calc)=>{
-    const vals=[];if(read!=='')vals.push(num(read));if(calc!=='')vals.push(num(calc));
-    return vals.length?Math.min(...vals):null;
-  };
+  // Winner basis = the As Calculated figure ONLY. The TWG's arithmetically
+  // corrected amount is authoritative, so it prevails even if As Read is lower.
+  // A blank As Calculated means that supplier cannot be the winner.
+  const calcBasis=calc=>(calc!==''?num(calc):null);
   let best=null,bestName='';
   [...$('absBody').children].forEach(tr=>{
     const read=tr.querySelector('.read').value;
@@ -587,16 +585,16 @@ function recalcAbstract(){
     tr.querySelector('.read-var').textContent=read!==''?variance(abc,read).toFixed(4)+'%':'—';
     tr.querySelector('.calc-var').textContent=calc!==''?variance(abc,calc).toFixed(4)+'%':'—';
     tr.classList.remove('win');
-    const basis=lowestOf(read,calc);
+    const basis=calcBasis(calc);
     if(basis!==null&&clean(name)){if(best===null||basis<best){best=basis;bestName=name;}}
   });
   [...$('absBody').children].forEach(tr=>{
-    const basis=lowestOf(tr.querySelector('.read').value,tr.querySelector('.calc').value);
+    const basis=calcBasis(tr.querySelector('.calc').value);
     if(basis!==null&&clean(tr.querySelector('.name').value)===bestName&&best!==null&&basis===best)tr.classList.add('win');
   });
   $('winLine').innerHTML=best!==null
     ?`Lowest Calculated &amp; Responsive: <b>${bestName}</b> <span class="winbadge">WINNER</span> &nbsp;Php ${fmtPeso(best)} &middot; <i>${pesoWords(best)}</i>`
-    :'Enter at least one supplier quotation to determine the winner.';
+    :'Enter at least one supplier\u2019s As Calculated quotation to determine the winner.';
 }
 function getAbstract(){
   const ref=clean($('refInput').value);
@@ -610,9 +608,9 @@ function getAbstract(){
     o.readVar=o.read!==null?variance(abc,o.read):null;
     o.calcVar=o.calc!==null?variance(abc,o.calc):null;
     suppliers.push(o);
-    // Award basis = lower of the supplier's two figures, regardless of column.
-    const vals=[];if(o.read!==null)vals.push(o.read);if(o.calc!==null)vals.push(o.calc);
-    const basis=vals.length?Math.min(...vals):null;
+    // Award basis = the As Calculated figure ONLY (TWG-corrected, authoritative).
+    // It prevails even if As Read is lower; a blank As Calculated can't win.
+    const basis=o.calc!==null?o.calc:null;
     if(basis!==null&&name){if(best===null||basis<best){best=basis;winner=o;}}
   });
   return {suppliers,winner,best,abc};
