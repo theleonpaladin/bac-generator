@@ -584,8 +584,8 @@ function recalcAbstract(){
     const read=tr.querySelector('.read').value;
     const calc=tr.querySelector('.calc').value;
     const name=tr.querySelector('.name').value;
-    tr.querySelector('.read-var').textContent=read!==''?variance(abc,read).toFixed(2)+'%':'—';
-    tr.querySelector('.calc-var').textContent=calc!==''?variance(abc,calc).toFixed(2)+'%':'—';
+    tr.querySelector('.read-var').textContent=read!==''?variance(abc,read).toFixed(4)+'%':'—';
+    tr.querySelector('.calc-var').textContent=calc!==''?variance(abc,calc).toFixed(4)+'%':'—';
     tr.classList.remove('win');
     const basis=lowestOf(read,calc);
     if(basis!==null&&clean(name)){if(best===null||basis<best){best=basis;bestName=name;}}
@@ -718,9 +718,9 @@ function abstractTable(abc,suppliers){
   const body=suppliers.map(s=>new k.TableRow({children:[
     cell(s.name,{w:ws[0]}),
     cell(s.read!=null?fmtPeso(s.read):'',{w:ws[1],align:k.AlignmentType.RIGHT}),
-    cell(s.readVar!=null?s.readVar.toFixed(2)+'%':'',{w:ws[2],align:k.AlignmentType.CENTER}),
+    cell(s.readVar!=null?s.readVar.toFixed(4)+'%':'',{w:ws[2],align:k.AlignmentType.CENTER}),
     cell(s.calc!=null?fmtPeso(s.calc):'',{w:ws[3],align:k.AlignmentType.RIGHT}),
-    cell(s.calcVar!=null?s.calcVar.toFixed(2)+'%':'',{w:ws[4],align:k.AlignmentType.CENTER}),
+    cell(s.calcVar!=null?s.calcVar.toFixed(4)+'%':'',{w:ws[4],align:k.AlignmentType.CENTER}),
   ]}));
   return new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:ws,rows:[head,...body]});
 }
