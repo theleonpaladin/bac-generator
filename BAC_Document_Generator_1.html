@@ -145,17 +145,13 @@ loadAll();
   <div class="card">
     <h2><span class="n">2</span> Choose Document</h2>
     <div class="tabs">
-      <div class="tab active" data-doc="reso">
-        <div class="t">BAC Resolution</div>
-        <div class="d">Award recommendation (single Ref. No.)</div>
-      </div>
-      <div class="tab" data-doc="opening">
+      <div class="tab active" data-doc="opening">
         <div class="t">Excerpt — Opening of Quotations</div>
         <div class="d">With Abstract of Quotation (single Ref. No.)</div>
       </div>
       <div class="tab" data-doc="consol">
-        <div class="t">Excerpt — Mode of Procurement</div>
-        <div class="d">Consolidation by meeting date (many PRs)</div>
+        <div class="t">Minutes — Mode of Procurement</div>
+        <div class="d">By meeting date (all PRs for that meeting)</div>
       </div>
     </div>
   </div>
@@ -255,14 +251,14 @@ const SHEET_ID = "2PACX-1vQ9kK0c8wtXxdhOgkigmQOMa-_6cJ220k2pPMLKAeRiTGcW3FCTNamx
 const SHEET_TABS = [
   { label: "Q1", gid: "0",          colShift: 0 },
   { label: "Q2", gid: "2026567419", colShift: 0 },
-  { label: "Q3", gid: "1014257743", colShift: 0 },
- { label: "Q4", gid: "193519281", colShift: 0 },
+  // { label: "Q3", gid: "PASTE_GID_HERE", colShift: 0 },
+  // { label: "Q4", gid: "PASTE_GID_HERE", colShift: 0 },
 ];
 
 // Builds the clean CSV URL for a given gid (handles the pubhtml→pub+csv detail for you)
 const tabUrl = gid => `https://docs.google.com/spreadsheets/d/e/${SHEET_ID}/pub?gid=${gid}&single=true&output=csv`;
 
-let RAW=[], BYREF={}, BYREF_ALL={}, MEETINGS={}, MEETING_ORDER=[], currentDoc='reso';
+let RAW=[], BYREF={}, BYREF_ALL={}, MEETINGS={}, MEETING_ORDER=[], currentDoc='opening';
 
 // ---------- helpers ----------
 const $=id=>document.getElementById(id);
@@ -293,8 +289,7 @@ const variance=(abc,q)=>{const A=num(abc),Q=num(q);return A?((A-Q)/A*100):0;};
 
 // Summed ABC for a reference: total of every PR sharing that ref. For a
 // single-PR ref this equals that PR's amount, so single-PR refs are unchanged.
-// This summed value is the variance basis in BOTH the Resolution and Opening
-// excerpt, so their % variances always match.
+// This summed value is the variance basis in the Opening excerpt.
 function sumABC(ref){
   const rows=(BYREF_ALL[ref]&&BYREF_ALL[ref].length)?BYREF_ALL[ref]:(BYREF[ref]?[BYREF[ref]]:[]);
   return rows.reduce((s,r)=>s+num(r.amount),0);
@@ -504,12 +499,12 @@ function ingestTabs(loadedTabs){
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   t.classList.add('active');currentDoc=t.dataset.doc;
-  const single=currentDoc==='reso'||currentDoc==='opening';
+  const single=currentDoc==='opening';
   $('singleCard').classList.toggle('hidden',!single);
   $('consolCard').classList.toggle('hidden',single);
   if(single){
     $('singleTitle').textContent='Enter Reference Number';
-    $('absSection').classList.toggle('hidden',false); // both reso & opening use abstract
+    $('absSection').classList.toggle('hidden',false); // the Opening excerpt uses the abstract
     buildManualFields();
     if($('refInput').value)onRefChange();
   }
@@ -618,12 +613,6 @@ function getAbstract(){
 
 // ---------- manual fields ----------
 const MANUAL_DEFS={
-  reso:[
-    {id:'rfqSentN',label:'No. of suppliers RFQ sent to',ph:'e.g. 3'},
-    {id:'respN',label:'No. of suppliers who responded',ph:'e.g. 3'},
-    {id:'resoNo',label:'BAC Resolution No.',ph:'e.g. 2026-0418'},
-    {id:'endUser',label:'End User (name)',ph:'e.g. ROMUALDO M. SALAZAR JR. MD, MHA'}
-  ],
   opening:[
     {id:'openMover',label:'Mover (motions)',type:'select',opts:['Mr. Tria','Mr. Cortuna','Engr. Dantis','Engr. Fineza']},
     {id:'openAdjourn',label:'Time of Adjournment',ph:'e.g. 10:30 AM',val:'10:00 AM'},
@@ -728,116 +717,6 @@ async function saveDoc(doc,filename){
   saveAs(blob,filename);
 }
 
-// ---- BAC RESOLUTION ----
-async function genReso(){
-  const k=D();const ref=clean($('refInput').value);const row=BYREF[ref];
-  if(!row)throw new Error('No matching Ref. No.');
-  const allRows=(BYREF_ALL[ref]&&BYREF_ALL[ref].length)?BYREF_ALL[ref]:[row];
-  const {suppliers,winner,best}=getAbstract();
-  if(!winner)throw new Error('Enter at least one supplier with a name and quotation.');
-  const g=id=>clean(($(id)||{}).value);
-  // "Lowest" if more than one supplier, "Single" if only one
-  const lowestSingle=suppliers.filter(s=>clean(s.name)).length>1?'Lowest':'Single';
-  const detailWs=[2520,2520,2520,2520];
-  const detailHead=new k.TableRow({tableHeader:true,children:[
-    cell('PURCHASE REQUEST NO.',{w:detailWs[0],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
-    cell('P.R. PREPARE DATE',{w:detailWs[1],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
-    cell('ABC',{w:detailWs[2],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
-    cell('FUNDING',{w:detailWs[3],bold:true,shade:'D9D9D9',align:k.AlignmentType.CENTER}),
-  ]});
-  // Resolution detail table: each PR keeps its own PR No., P.R. Date, and
-  // Funding on its own row, but the ABC is SUMMED across all PRs and shown
-  // once (vertically merged cell spanning all rows). Single-PR refs look normal.
-  const summedABC=sumABC(ref);
-  const detailRows=allRows.map((pr,idx)=>{
-    const cells=[
-      cell(pr.pr,{w:detailWs[0],align:k.AlignmentType.CENTER}),
-      cell(fmtLongDate(pr.prDate),{w:detailWs[1],align:k.AlignmentType.CENTER}),
-    ];
-    // ABC cell: on the first row carry the summed total and start the vertical
-    // merge; on following rows continue the merge (so it reads as one cell).
-    if(idx===0){
-      cells.push(new k.TableCell({
-        width:{size:detailWs[2],type:k.WidthType.DXA},borders:cBorder(),
-        verticalMerge:allRows.length>1?k.VerticalMergeType.RESTART:undefined,
-        margins:{top:60,bottom:60,left:90,right:90},verticalAlign:k.VerticalAlign.CENTER,
-        children:[new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('Php '+fmtPeso(summedABC),{size:20})]})]
-      }));
-    }else{
-      cells.push(new k.TableCell({
-        width:{size:detailWs[2],type:k.WidthType.DXA},borders:cBorder(),
-        verticalMerge:k.VerticalMergeType.CONTINUE,
-        children:[new k.Paragraph({spacing:{after:0},children:[run('',{size:20})]})]
-      }));
-    }
-    cells.push(cell(pr.funding,{w:detailWs[3],align:k.AlignmentType.CENTER}));
-    return new k.TableRow({children:cells});
-  });
-
-  const children=[
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('Republic of the Philippines',{size:20})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('MIMAROPA Region',{size:20})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('PROVINCIAL GOVERNMENT OF OCCIDENTAL MINDORO',{bold:true,size:22})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:200},children:[run('BIDS AND AWARDS COMMITTEE',{bold:true,size:24})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('BAC RESOLUTION NO. '+(g('resoNo')||'[____]'),{bold:true})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:0},children:[run('SERIES OF '+( (row.ref.split('-')[1])||'202_' ),{bold:true})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:200},children:[run('REFERENCE NO. '+row.ref,{bold:true})]}),
-    new k.Paragraph({alignment:k.AlignmentType.CENTER,spacing:{after:240},children:[run('RECOMMENDING THE AWARD OF CONTRACT FOR THE '+row.project.toUpperCase(),{bold:true})]}),
-    new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
-      run('WHEREAS, ',{bold:true}),
-      run('the Bids and Awards Committee (BAC) Secretariat received request from the End-User unit to procure under '+row.mode+' the items indicated in the approved Purchase Request with the following details:')
-    ]}),
-    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:detailWs,rows:[detailHead,...detailRows]}),
-    new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
-      run('WHEREAS, ',{bold:true}),
-      run('the BAC, through its Secretariat, prepared Request for Quotation (RFQ) forms and sent it to '+(g('rfqSentN')||'[__]')+' suppliers or contractors of known qualifications on '+(fmtLongDate(row.rfqPrepared)||g('rfqSentDate')||'[RFQ Prepared Date]')+';')
-    ]}),
-    new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[
-      run('WHEREAS, ',{bold:true}),
-      run('on, '+(fmtLongDate(row.opening)||'[Opening of Quotation]')+', the scheduled date of deadline for submission of quotation, the Secretariat received responses from '+(g('respN')||'[__]')+' suppliers which resulted in the following Abstract of Quotation:')
-    ]}),
-    abstractTable(sumABC(ref),suppliers),
-    new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[
-      run('WHEREAS, ',{bold:true}),
-      run('after validation and verification of all documentary requirements, and technical and financial offers of the suppliers, the Bids and Awards Committee considered the offer of '),
-      run(winner.name,{bold:true}),
-      run(' as the '+lowestSingle+' Calculated and Responsive Quotation for this Project;')
-    ]}),
-    new k.Paragraph({spacing:{after:200},alignment:k.AlignmentType.JUSTIFIED,children:[
-      run('NOW, THEREFORE, WE, ',{bold:true}),
-      run('the members of the Bids and Awards Committee, hereby '),
-      run('RESOLVE, ',{bold:true}),run('as it is hereby '),run('RESOLVED, ',{bold:true}),
-      run('to recommend to the Provincial Governor the '),
-      run('AWARD OF CONTRACT ',{bold:true}),
-      run('to '),run(winner.name,{bold:true}),run(' for the '),run(row.project,{bold:true}),
-      run(' in the amount of '),
-      run(pesoWords(best)+' ',{bold:true}),
-      run('(Php '+fmtPeso(best)+').',{bold:true})
-    ]}),
-    new k.Paragraph({spacing:{after:160},children:[run('UNANIMOUSLY RECOMMENDED.',{bold:true})]}),
-    new k.Paragraph({spacing:{after:240},alignment:k.AlignmentType.JUSTIFIED,children:[run('Done on '+(fmtLongDate(row.opening)||'[Opening of Quotation]')+' at the Bids and Awards Committee Office, 2nd Floor, GSO Warehouse Facility, Capitol Compound, Mamburao, Occidental Mindoro')]}),
-    new k.Paragraph({spacing:{after:200},children:[run('RECOMMENDING APPROVAL:',{bold:true})]}),
-  ];
-  // signatories
-  const sig=(n,t)=>[new k.Paragraph({spacing:{before:240,after:0},children:[run(n,{bold:true})]}),new k.Paragraph({spacing:{after:0},children:[run(t,{italics:true,size:20})]})];
-  const sigTriplet=(a,b,c)=>{
-    const w=[3360,3360,3360];
-    const r=(name,title)=>new k.TableCell({width:{size:3360,type:k.WidthType.DXA},borders:{top:{style:k.BorderStyle.NONE},bottom:{style:k.BorderStyle.NONE},left:{style:k.BorderStyle.NONE},right:{style:k.BorderStyle.NONE}},margins:{top:200,bottom:0,left:40,right:40},children:[new k.Paragraph({spacing:{after:0},children:[run(name,{bold:true})]}),new k.Paragraph({spacing:{after:0},children:[run(title,{italics:true,size:20})]})]});
-    return new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:w,rows:[new k.TableRow({children:[r(a[0],a[1]),r(b[0],b[1]),r(c[0],c[1])]})]});
-  };
-  children.push(sigTriplet(['MARIO D. MULINGBAYAN, JR.','Chairman'],['MANUEL T. TRIA JR.','Vice Chairman'],['ANTHONY A. DANTIS','Member']));
-  children.push(sigTriplet(['IRENEO M. CORTUNA','Member'],['ROMMEL D. FINEZA','Member'],[(g('endUser')||'ROMUALDO M. SALAZAR JR. MD, MHA'),'End User']));
-  children.push(new k.Paragraph({spacing:{before:240,after:0},children:[run('Attested by:')]}));
-  children.push(...sig('JANETH B. MULINGBAYAN','BAC Head Secretariat'));
-  children.push(new k.Paragraph({spacing:{before:280,after:200},children:[run('APPROVED / DISAPPROVED:',{bold:true})]}));
-  children.push(new k.Paragraph({spacing:{before:200,after:0},alignment:k.AlignmentType.CENTER,children:[run('EDUARDO B. GADIANO',{bold:true})]}));
-  children.push(new k.Paragraph({spacing:{after:0},alignment:k.AlignmentType.CENTER,children:[run('GOVERNOR',{italics:true,size:20})]}));
-
-  const doc=new k.Document({styles:{default:{document:{run:{font:'Arial',size:22}}}},
-    sections:[{properties:{page:{size:PAGE,margin:MARGIN}},children}]});
-  await saveDoc(doc,`BAC_Resolution_${row.ref}.docx`);
-}
-
 // ---- EXCERPT: OPENING OF QUOTATIONS ----
 async function genOpening(){
   const k=D();const ref=clean($('refInput').value);const row=BYREF[ref];
@@ -888,60 +767,169 @@ async function genOpening(){
   await saveDoc(doc,`Excerpt_Opening_${row.ref}.docx`);
 }
 
-// ---- EXCERPT: MODE OF PROCUREMENT (CONSOLIDATION) ----
+// ---- MINUTES: MODE OF PROCUREMENT (new format, based on the Sept 14, 2026 sample) ----
+// This document has its own look (Cambria, 8.5" x 13" long bond) and its own
+// helpers, so the Opening of Quotations excerpt keeps its existing format.
+const MP_FONT='Cambria';
+const MP_PAGE={width:12240,height:18720};            // 8.5" x 13" (long bond)
+const MP_MARGIN={top:1080,right:1080,bottom:1080,left:1080};
+const MP_CW=10080;                                    // 12240 - 2 x 1080
+const MP_FILL='C6E0B4';                               // table header green
+const WEEKDAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+function mpRun(text,o={}){return new (D().TextRun)({text,font:MP_FONT,size:22,...o});}
+function mpPara(children,{align,before=0,after=0,keepNext=false}={}){
+  return new (D().Paragraph)({alignment:align,keepNext,spacing:{before,after},children});
+}
+function mpCell(text,{w,bold=false,shade,align,vMerge,keepNext=false}={}){
+  const k=D();
+  const b={style:k.BorderStyle.SINGLE,size:4,color:'7F9B86'};
+  return new k.TableCell({
+    width:{size:w,type:k.WidthType.DXA},
+    borders:{top:b,bottom:b,left:b,right:b},
+    shading:shade?{fill:shade,type:k.ShadingType.CLEAR,color:'auto'}:undefined,
+    margins:{top:60,bottom:60,left:90,right:90},
+    verticalAlign:k.VerticalAlign.CENTER,
+    verticalMerge:vMerge,
+    children:[new k.Paragraph({alignment:align||k.AlignmentType.LEFT,keepNext,spacing:{after:0},
+      children:[mpRun(text==null?'':String(text),{bold,size:20})]})]
+  });
+}
+
+// "September 14, 2026" -> "Monday". Returns '' if the date can't be read.
+function weekdayOf(dateStr){
+  const m=fmtLongDate(dateStr).match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
+  if(!m)return '';
+  const mi=MONTHS.indexOf(m[1]);
+  if(mi<0)return '';
+  const d=new Date(+m[3],mi,+m[2]);
+  return d.getMonth()===mi?WEEKDAYS[d.getDay()]:'';
+}
+
+// Group consecutive rows that share a Ref. No. (a merged Ref. No. in the sheet).
+// Mode and project come from the first row that has them, because merged cells
+// export as blank on the continuation rows.
+function groupByRef(rows){
+  const groups=[];
+  for(const r of rows){
+    const last=groups[groups.length-1];
+    if(r.ref&&last&&last.ref===r.ref)last.rows.push(r);
+    else groups.push({ref:r.ref,rows:[r]});
+  }
+  return groups.map(g=>({
+    ref:g.ref,rows:g.rows,
+    mode:(g.rows.find(r=>r.mode)||{}).mode||'',
+    project:(g.rows.find(r=>r.project)||{}).project||''
+  }));
+}
+
 async function genConsol(){
-  const k=D();const m=$('meetSelect').value;
+  const k=D();const A=k.AlignmentType;
+  const m=$('meetSelect').value;
   const list=(MEETINGS[m]||[]).filter(r=>r.pr);
   if(!list.length)throw new Error('No purchase requests under this meeting.');
-  const mover=$('meetMover').value;const adjourn=clean($('meetAdjourn').value)||'[Time]';
+  const mover=$('meetMover').value;
+  const adjourn=clean($('meetAdjourn').value)||'[Time of End of Meeting]';
+  const dateLong=fmtLongDate(m)||m;
+  const weekday=weekdayOf(m);
 
-  // Table 1: received PRs (Control / PR No. / Amount / Source / Office)
+  // ---- Table 1: Purchase Requests received ----
   const w1=[1512,3528,2016,1512,1512];
-  const t1head=new k.TableRow({tableHeader:true,children:[
-    cell('Control No.',{w:w1[0],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Purchase Request No.',{w:w1[1],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Amount',{w:w1[2],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Source of Fund',{w:w1[3],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Office',{w:w1[4],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
+  const hd=(t,w)=>mpCell(t,{w,bold:true,shade:MP_FILL,align:A.CENTER});
+  const t1=new k.Table({width:{size:MP_CW,type:k.WidthType.DXA},columnWidths:w1,rows:[
+    new k.TableRow({tableHeader:true,cantSplit:true,children:[
+      hd('Control No.',w1[0]),hd('Purchase Request No.',w1[1]),hd('Amount',w1[2]),hd('Source of Fund',w1[3]),hd('Office',w1[4])]}),
+    ...list.map(r=>new k.TableRow({cantSplit:true,children:[
+      mpCell(r.control,{w:w1[0],align:A.CENTER}),
+      mpCell(r.pr,{w:w1[1]}),
+      mpCell(fmtPeso(num(r.amount)),{w:w1[2],align:A.RIGHT}),
+      mpCell(r.funding,{w:w1[3],align:A.CENTER}),
+      mpCell(r.office,{w:w1[4],align:A.CENTER}),
+    ]}))
   ]});
-  const t1rows=list.map(r=>new k.TableRow({children:[
-    cell(r.control,{w:w1[0],align:k.AlignmentType.CENTER}),
-    cell(r.pr,{w:w1[1]}),
-    cell(fmtPeso(num(r.amount)),{w:w1[2],align:k.AlignmentType.RIGHT}),
-    cell(r.funding,{w:w1[3],align:k.AlignmentType.CENTER}),
-    cell(r.office,{w:w1[4],align:k.AlignmentType.CENTER}),
-  ]}));
 
-  // Table 2: mode determination (only rows that have a Ref/Mode)
+  // ---- Table 2: mode of procurement per project ----
+  // Each PR keeps its own row and its own ABC. When several PRs share one
+  // Ref. No., Mode / Project Title / Ref. No. are merged down across them.
   const proc=list.filter(r=>r.ref||r.mode);
   const w2=[1764,2016,3528,1764,1008];
-  const t2head=new k.TableRow({tableHeader:true,children:[
-    cell('Purchase Request No.',{w:w2[0],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Mode of Procurement',{w:w2[1],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Project Title',{w:w2[2],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Approved Budget of Contract',{w:w2[3],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
-    cell('Ref. No.',{w:w2[4],bold:true,shade:'C6E0B4',align:k.AlignmentType.CENTER}),
+  const t2rows=[];
+  groupByRef(proc).forEach(g=>{
+    const n=g.rows.length;
+    g.rows.forEach((r,i)=>{
+      const first=i===0,last=i===n-1;
+      const keep=!last;   // keep a merged group together on one page
+      const vm=n>1?(first?k.VerticalMergeType.RESTART:k.VerticalMergeType.CONTINUE):undefined;
+      t2rows.push(new k.TableRow({cantSplit:true,children:[
+        mpCell(r.pr,{w:w2[0],keepNext:keep}),
+        mpCell(first?g.mode:'',{w:w2[1],vMerge:vm,keepNext:keep}),
+        mpCell(first?g.project:'',{w:w2[2],vMerge:vm,keepNext:keep}),
+        mpCell('Php '+fmtPeso(num(r.amount)),{w:w2[3],align:A.RIGHT,keepNext:keep}),
+        mpCell(first?g.ref:'',{w:w2[4],align:A.CENTER,vMerge:vm,keepNext:keep}),
+      ]}));
+    });
+  });
+  const t2=new k.Table({width:{size:MP_CW,type:k.WidthType.DXA},columnWidths:w2,rows:[
+    new k.TableRow({tableHeader:true,cantSplit:true,children:[
+      hd('Purchase Request No.',w2[0]),hd('Mode of Procurement',w2[1]),hd('Project Title',w2[2]),
+      hd('Approved Budget of Contract',w2[3]),hd('Ref. No.',w2[4])]}),
+    ...t2rows
   ]});
-  const t2rows=proc.map(r=>new k.TableRow({children:[
-    cell(r.pr,{w:w2[0]}),cell(r.mode,{w:w2[1]}),cell(r.project,{w:w2[2]}),
-    cell('Php '+fmtPeso(num(r.amount)),{w:w2[3],align:k.AlignmentType.RIGHT}),cell(r.ref,{w:w2[4],align:k.AlignmentType.CENTER}),
-  ]}));
+
+  // ---- Text ----
+  const J=A.JUSTIFIED,C=A.CENTER;
+  const H=(t,o={})=>mpPara([mpRun(t,{bold:true})],{align:J,keepNext:true,...o});
+  const P=(runs,o={})=>mpPara(runs,{align:J,...o});
+  const B=t=>mpRun(t,{bold:true});
+  const blank=(keepNext=true)=>mpPara([mpRun('')],{align:J,keepNext});
+  const sig=(t,bold,keepNext=true)=>mpPara([mpRun(t,{bold})],{align:J,keepNext});
 
   const children=[
-    ...headerBlock(['EXCERPT OF MINUTES OF MEETING ON DETERMINING THE MODE OF','PROCUREMENT FOR SUBMITTED PURCHASE REQUESTS ('+m+')']),
-    new k.Paragraph({spacing:{after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('The meeting was called to order on '),run(m,{bold:true}),run(' at 9:00 AM at the Bids and Awards Committee Office, 2nd Floor, GSO Warehouse Facility, Capitol Compound, Mamburao, Occidental Mindoro, and was presided over by Chairman Mario D. Mulingbayan, Jr. He requested the Secretariat to call the roll to determine quorum. After determining the presence of quorum, he requested the Secretariat to present the Purchase Requests received.')]}),
-    new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[run('The Secretariat presented to the body the received and compiled approved Purchase Requests submitted by different departments/End User units until the early morning of '),run(m,{bold:true}),run(', which included the following:')]}),
-    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:w1,rows:[t1head,...t1rows]}),
-    new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('The Chairman requested the BAC members and TWG members present to review the contents and technical specifications indicated in the Purchase Requests presented by the Secretariat. The End User unit representatives present were also asked to verify the contents of the Purchase Requests coming from their respective offices and answer any queries from the BAC members and TWG.')]}),
-    new k.Paragraph({spacing:{after:120},alignment:k.AlignmentType.JUSTIFIED,children:[run('Upon verification and consultation, and as per modes of procurement indicated in the Annual Procurement Plan (APP), the above-indicated Purchase Requests were agreed to be procured as follows, with their respective Approved Budget of Contract, in accordance with R.A. No. 12009 and its Implementing Rules and Regulations (IRR):')]}),
-    new k.Table({width:{size:CW,type:k.WidthType.DXA},columnWidths:w2,rows:[t2head,...t2rows]}),
-    new k.Paragraph({spacing:{before:160,after:160},alignment:k.AlignmentType.JUSTIFIED,children:[run('The Chairman asked the body if there were any further questions, clarifications, or requested changes to the projects to be posted/canvassed/bid. Hearing none, the Chairman ordered the Secretariat to prepare the Request for Quotation for the non-bidding procurement projects.')]}),
-    new k.Paragraph({spacing:{after:200},alignment:k.AlignmentType.JUSTIFIED,children:[run('On the motion of '),run(mover,{bold:true}),run(', seconded by the body, the meeting adjourned at '),run(adjourn,{bold:true}),run('.')]}),
-    new k.Paragraph({spacing:{after:200},alignment:k.AlignmentType.JUSTIFIED,children:[run('I hereby certify that the foregoing are true and correct excerpts from the minutes of meeting of the BAC held on '),run(m,{bold:true}),run('.')]}),
+    mpPara([mpRun('REPUBLIC OF THE PHILIPPINES',{size:20})],{align:C}),
+    mpPara([B('PROVINCIAL GOVERNMENT OF OCCIDENTAL MINDORO')],{align:C}),
+    mpPara([mpRun('Mamburao, Occidental Mindoro',{size:20})],{align:C,after:200}),
+    mpPara([mpRun('MINUTES OF MEETING ON DETERMINING THE MODE OF',{bold:true,size:24})],{align:C}),
+    mpPara([mpRun('PROCUREMENT FOR SUBMITTED PURCHASE REQUESTS',{bold:true,size:24})],{align:C}),
+    mpPara([mpRun((weekday?weekday+', ':'')+dateLong,{size:24})],{align:C}),
+    mpPara([mpRun('',{size:24})],{align:C}),
+
+    H('CALL TO ORDER',{after:160}),
+    P([mpRun('The meeting was called to order on '),B(dateLong),mpRun(' at 9:00 AM at the Bids and Awards Committee Office, 2nd Floor, GSO Warehouse Facility, Capitol Compound, Mamburao, Occidental Mindoro, and was presided over by Chairman Mario D. Mulingbayan, Jr.')],{after:160}),
+
+    H('ROLL CALL',{after:160}),
+    P([mpRun('He requested the Secretariat to call the roll to determine quorum. After determining the presence of quorum, he requested the Secretariat to present the Purchase Requests received.')],{after:160}),
+
+    H('PRESENTATION OF PURCHASE REQUESTS',{after:120}),
+    P([mpRun('The Secretariat presented to the body the received and compiled approved Purchase Requests submitted by different departments/End User units until the early morning of '),B(dateLong),mpRun(', which included the following:')],{after:120,keepNext:true}),
+    t1,
+
+    H('REVIEW OF PURCHASE REQUESTS',{before:160,after:160}),
+    P([mpRun('The Chairman requested the BAC members and TWG members present to review the contents and technical specifications indicated in the Purchase Requests presented by the Secretariat. The End User unit representatives present were also asked to verify the contents of the Purchase Requests coming from their respective offices and answer any queries from the BAC members and TWG.')],{before:160,after:160}),
+
+    H('DETERMINATION OF MODE OF PROCUREMENT',{after:120}),
+    P([mpRun('Upon verification and consultation, and as per modes of procurement indicated in the Annual Procurement Plan (APP), the above-indicated Purchase Requests were agreed to be procured as follows, with their respective Approved Budget of Contract, in accordance with R.A. No. 12009 and its Implementing Rules and Regulations (IRR):')],{after:120,keepNext:true}),
+    t2,
+
+    H('CLARIFICATIONS/QUESTIONS',{before:160,after:160}),
+    P([mpRun('The Chairman asked the body if there were any further questions, clarifications, or requested changes to the projects to be posted/canvassed/bid. Hearing none, the Chairman ordered the Secretariat to prepare the Request for Quotation for the non-bidding procurement projects.')],{before:160,after:160}),
+
+    H('ADJOURNMENT',{after:200}),
+    P([mpRun('On the motion of '),B(mover),mpRun(', seconded by the body, the meeting adjourned at '),B(adjourn),mpRun('.')],{after:200}),
+    blank(false),
+
+    // Signature block (kept together on one page)
+    sig('PREPARED BY:',true),blank(),blank(),blank(),
+    sig('JANETH B. MULINGBAYAN',true),sig('Head, BAC Secretariat',false),
+    blank(),blank(),blank(),
+    sig('APPROVED BY:',true),blank(),blank(),blank(),
+    sig('MARIO D. MULINGBAYAN, JR.',true),sig('Chairman, Bids and Awards Committee',false,false),
   ];
-  const doc=new k.Document({styles:{default:{document:{run:{font:'Arial',size:22}}}},
-    sections:[{properties:{page:{size:PAGE,margin:MARGIN}},children}]});
-  await saveDoc(doc,`Excerpt_ModeOfProcurement_${m.replace(/[^a-z0-9]+/gi,'_')}.docx`);
+
+  const doc=new k.Document({
+    styles:{default:{document:{run:{font:MP_FONT,size:22}}}},
+    sections:[{properties:{page:{size:MP_PAGE,margin:MP_MARGIN}},children}]
+  });
+  await saveDoc(doc,`Minutes_ModeOfProcurement_${m.replace(/[^a-z0-9]+/gi,'_')}.docx`);
 }
 
 // ---------- button wiring ----------
@@ -950,7 +938,7 @@ $('genSingle').onclick=async()=>{
   const st=$('genStatus');st.className='status load show';st.textContent='Building document…';
   busy($('genSingle'),true);
   try{
-    if(currentDoc==='reso')await genReso();else await genOpening();
+    await genOpening();
     st.className='status ok show';st.textContent='✓ Word file downloaded. Check your Downloads folder.';
   }catch(e){st.className='status err show';st.textContent='Error: '+e.message;}
   busy($('genSingle'),false);
