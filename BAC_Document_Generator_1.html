@@ -115,6 +115,7 @@ loadAll();
   .meetlist th{position:sticky;top:0;background:var(--shade);color:var(--green-d);padding:6px 8px;text-align:left;font-size:11px}
   .meetlist td{padding:5px 8px;border-top:1px solid #eef3ef}
   .meetlist tr:hover{background:#f6faf7}
+  .meetlist tr.cx td{color:#9aa5a0;text-decoration:line-through}
   footer{text-align:center;color:var(--muted);font-size:11.5px;padding:20px}
   .addrow{margin-top:8px}
   .spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px}
@@ -251,8 +252,8 @@ const SHEET_ID = "2PACX-1vQ9kK0c8wtXxdhOgkigmQOMa-_6cJ220k2pPMLKAeRiTGcW3FCTNamx
 const SHEET_TABS = [
   { label: "Q1", gid: "0",          colShift: 0 },
   { label: "Q2", gid: "2026567419", colShift: 0 },
-  { label: "Q3", gid: "1014257743", colShift: 0 },
-  { label: "Q4", gid: "193519281", colShift: 0 },
+  // { label: "Q3", gid: "PASTE_GID_HERE", colShift: 0 },
+  // { label: "Q4", gid: "PASTE_GID_HERE", colShift: 0 },
 ];
 
 // Builds the clean CSV URL for a given gid (handles the pubhtml→pub+csv detail for you)
@@ -461,7 +462,7 @@ function ingestTabs(loadedTabs){
       const row={
         control:clean(r['']),pr,prDate:clean(r['P.R. Date']),amount:clean(r['Amount']),
         desc:clean(r['Brief Description']),funding:clean(r['Funding']),office:clean(r['Office']),
-        mode:clean(r['Mode']),project:clean(r['Project Name']),ref:rowRef,
+        mode:clean(r['Mode']),project:clean(r['Project Name']),ref:rowRef,cancelled:rowRef.indexOf('/')!==-1,
         duration:clean(r['Project Duration']),rfqPrepared:clean(r['RFQ Prepared Date']),
         opening:clean(r['Opening of Quotation']),philgepsPost:clean(r['PhilGEPS Posting Date']),
         philgepsCtrl:clean(r['PhilGEPS Control No.']),winner:clean(r['Winning Bidder']),
@@ -490,7 +491,10 @@ function ingestTabs(loadedTabs){
   // populate meetings
   const ms=$('meetSelect');ms.innerHTML='';
   MEETING_ORDER.forEach(m=>{const o=document.createElement('option');o.value=m;
-    o.textContent=`${m}  (${MEETINGS[m].filter(r=>r.ref).length} projects)`;ms.appendChild(o);});
+    const rowsM=MEETINGS[m]||[];
+    const activeRefs=new Set(rowsM.filter(r=>r.ref&&!r.cancelled).map(r=>r.ref)).size;
+    const cxN=rowsM.filter(r=>r.cancelled).length;
+    o.textContent=`${m}  (${activeRefs} projects${cxN?`, ${cxN} cancelled PR${cxN>1?'s':''} excluded`:''})`;ms.appendChild(o);});
   if(MEETING_ORDER.length)renderMeetPreview();
   return dupes;
 }
@@ -637,7 +641,7 @@ $('meetSelect').onchange=renderMeetPreview;
 function renderMeetPreview(){
   const m=$('meetSelect').value;const list=(MEETINGS[m]||[]).filter(r=>r.ref||r.pr);
   $('meetPreview').innerHTML=`<table><thead><tr><th>Ctrl</th><th>PR No.</th><th>Amount</th><th>Fund</th><th>Office</th><th>Mode</th><th>Ref</th></tr></thead><tbody>${
-    list.map(r=>`<tr><td>${r.control||''}</td><td>${r.pr}</td><td style="text-align:right">${r.amount}</td><td>${r.funding}</td><td>${r.office}</td><td>${r.mode||'—'}</td><td>${r.ref||'—'}</td></tr>`).join('')
+    list.map(r=>`<tr${r.cancelled?' class="cx" title="Cancelled — excluded from the minutes"':''}><td>${r.control||''}</td><td>${r.pr}</td><td style="text-align:right">${r.amount}</td><td>${r.funding}</td><td>${r.office}</td><td>${r.mode||'—'}</td><td>${r.ref||'—'}${r.cancelled?' (cancelled)':''}</td></tr>`).join('')
   }</tbody></table>`;
 }
 
@@ -826,8 +830,13 @@ function groupByRef(rows){
 async function genConsol(){
   const k=D();const A=k.AlignmentType;
   const m=$('meetSelect').value;
-  const list=(MEETINGS[m]||[]).filter(r=>r.pr);
-  if(!list.length)throw new Error('No purchase requests under this meeting.');
+  const allRowsM=(MEETINGS[m]||[]).filter(r=>r.pr);
+  // Cancelled PRs (Ref. No. contains "/", including every row under a merged
+  // cancelled Ref. No.) stay in the sheet for the record but are left out here.
+  const list=allRowsM.filter(r=>!r.cancelled);
+  if(!list.length)throw new Error(allRowsM.length
+    ?'Every purchase request under this meeting is marked cancelled, so there is nothing to include.'
+    :'No purchase requests under this meeting.');
   const mover=$('meetMover').value;
   const adjourn=clean($('meetAdjourn').value)||'[Time of End of Meeting]';
   const dateLong=fmtLongDate(m)||m;
